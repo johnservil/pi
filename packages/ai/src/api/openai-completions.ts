@@ -565,8 +565,13 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				}
 
 				if (choice.finish_reason) {
-					output.rawStopReason = choice.finish_reason;
-					const finishReasonResult = mapStopReason(choice.finish_reason);
+					const nativeFinishReason = (choice as { native_finish_reason?: unknown }).native_finish_reason;
+					const normalizedNative =
+						typeof nativeFinishReason === "string" && nativeFinishReason.length > 0
+							? nativeFinishReason
+							: undefined;
+					const finishReasonResult = mapStopReason(choice.finish_reason, normalizedNative);
+					output.rawStopReason = finishReasonResult.rawStopReason ?? choice.finish_reason;
 					output.stopReason = finishReasonResult.stopReason;
 					if (finishReasonResult.errorMessage) {
 						output.errorMessage = finishReasonResult.errorMessage;
@@ -1560,14 +1565,46 @@ function parseChunkUsage(
 	return usage;
 }
 
-function mapStopReason(reason: ChatCompletionChunk.Choice["finish_reason"] | string): {
+// Upstream provider failure finish reasons that OpenAI-compatible gateways
+// (notably OpenRouter) sometimes normalize to `finish_reason: "stop"` while
+// forwarding the original reason in `choice.native_finish_reason`.
+const NATIVE_ERROR_FINISH_REASONS = new Set([
+	"MALFORMED_RESPONSE",
+	"MALFORMED_FUNCTION_CALL",
+	"UNEXPECTED_TOOL_CALL",
+	"TOO_MANY_TOOL_CALLS",
+	"SAFETY",
+	"RECITATION",
+	"BLOCKLIST",
+	"PROHIBITED_CONTENT",
+	"SPII",
+	"IMAGE_SAFETY",
+	"IMAGE_PROHIBITED_CONTENT",
+	"IMAGE_RECITATION",
+	"IMAGE_OTHER",
+	"LANGUAGE",
+	"NO_IMAGE",
+]);
+
+function mapStopReason(
+	reason: ChatCompletionChunk.Choice["finish_reason"] | string,
+	nativeReason?: string,
+): {
 	stopReason: StopReason;
 	errorMessage?: string;
+	rawStopReason?: string;
 } {
 	if (reason === null) return { stopReason: "stop" };
 	switch (reason) {
 		case "stop":
 		case "end":
+			if (nativeReason && NATIVE_ERROR_FINISH_REASONS.has(nativeReason.toUpperCase())) {
+				return {
+					stopReason: "error",
+					errorMessage: `Provider native_finish_reason: ${nativeReason}`,
+					rawStopReason: nativeReason,
+				};
+			}
 			return { stopReason: "stop" };
 		case "length":
 			return { stopReason: "length" };

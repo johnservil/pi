@@ -124,6 +124,11 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// An OpenAI-compatible stream that ended with `finish_reason: "error"`, which OpenRouter
 	// sends when its provider fails mid-stream; see `mapStopReason` in openai-completions.ts.
 	"provider finish_reason: error",
+	// An upstream malformed-output stop that OpenRouter normalized to `finish_reason: "stop"`
+	// while forwarding `native_finish_reason` (e.g. Google's `MALFORMED_RESPONSE` or
+	// `MALFORMED_FUNCTION_CALL`), or the direct Google adapter's `Provider stopped with: ...`.
+	"provider native_finish_reason: malformed_(?:response|function_call)",
+	"provider stopped with: malformed_(?:response|function_call)",
 	// OpenRouter: "Provider returned an empty response", and its wrapper for a provider that
 	// gave up, e.g. "Upstream error from Relace: The model stopped before completing the response."
 	"returned an empty response",

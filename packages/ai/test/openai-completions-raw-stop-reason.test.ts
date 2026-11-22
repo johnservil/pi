@@ -77,4 +77,47 @@ describe("OpenAI completions raw stop reasons", () => {
 		expect(message.rawStopReason).toBe("content_filter");
 		expect(message.errorMessage).toBe("Provider finish_reason: content_filter");
 	});
+
+	it.each(["MALFORMED_RESPONSE", "MALFORMED_FUNCTION_CALL", "SAFETY", "RECITATION"])(
+		"treats finish_reason=stop with error native_finish_reason=%s as an error",
+		async (nativeFinishReason) => {
+			mockState.chunks = [
+				{
+					id: "gen-1",
+					choices: [{ index: 0, delta: {}, finish_reason: "stop", native_finish_reason: nativeFinishReason }],
+				},
+			];
+
+			const message = await streamOpenAICompletions(model, context, { apiKey: "test" }).result();
+
+			expect(message.stopReason).toBe("error");
+			expect(message.rawStopReason).toBe(nativeFinishReason);
+			expect(message.errorMessage).toBe(`Provider native_finish_reason: ${nativeFinishReason}`);
+		},
+	);
+
+	it.each(["STOP", "end_turn", "completed", "stop"])(
+		"keeps finish_reason=stop as a normal stop for non-error native_finish_reason=%s",
+		async (nativeFinishReason) => {
+			mockState.chunks = [
+				{
+					id: "gen-2",
+					choices: [
+						{
+							index: 0,
+							delta: { content: "ok" },
+							finish_reason: "stop",
+							native_finish_reason: nativeFinishReason,
+						},
+					],
+				},
+			];
+
+			const message = await streamOpenAICompletions(model, context, { apiKey: "test" }).result();
+
+			expect(message.stopReason).toBe("stop");
+			expect(message.rawStopReason).toBe("stop");
+			expect(message.errorMessage).toBeUndefined();
+		},
+	);
 });

@@ -246,6 +246,10 @@ describe("provider retry classification", () => {
 		"waited 73.4s in queue, reaching this model's admission ceiling of 60s; retry after the hinted delay",
 		'{"type":"error","error":{"details":null,"type":"api_error","message":"Unable to complete this request right now. Please try again."},"request_id":"req_011CgfE1bTgPTDsor4TsApFv"}',
 		"Provider finish_reason: error",
+		"Provider native_finish_reason: MALFORMED_RESPONSE",
+		"Provider native_finish_reason: MALFORMED_FUNCTION_CALL",
+		"Provider stopped with: MALFORMED_RESPONSE",
+		"Provider stopped with: MALFORMED_FUNCTION_CALL",
 		"Provider returned an empty response",
 		"Upstream error from Relace: The model stopped before completing the response.",
 	])("retries temporary provider failures: %s", (errorMessage) => {
@@ -259,6 +263,7 @@ describe("provider retry classification", () => {
 		'{"type":"error","error":{"type":"invalid_request_error","message":"messages: at least one message is required"}}',
 		// A refusal ends the stream with a finish reason other than `error`.
 		"Provider finish_reason: content_filter",
+		"Provider native_finish_reason: SAFETY",
 		// The quota exclusions are checked before the retryable patterns.
 		'{"type":"error","error":{"type":"api_error","message":"Monthly quota exceeded"}}',
 	])("does not retry: %s", (errorMessage) => {
