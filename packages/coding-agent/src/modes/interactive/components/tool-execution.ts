@@ -63,6 +63,31 @@ export class ToolExecutionComponent extends Container {
 		durationMs?: number;
 	};
 	private hideComponent = false;
+	/** Monotonic counter bumped whenever inputs/theme/layout options change. */
+	private stateVersion = 0;
+	/** Which `expanded` value the current child tree reflects (`undefined` = needs `updateDisplay()`). */
+	private displayedExpanded: boolean | undefined = undefined;
+	/** Per-mode rendered line caches keyed by `(width, stateVersion)` so C-o toggles reuse prior work. */
+	private collapsedRenderCache?: {
+		width: number;
+		version: number;
+		lines: readonly string[];
+		hideComponent: boolean;
+		selfRenderHeight: number;
+	};
+	private expandedRenderCache?: {
+		width: number;
+		version: number;
+		lines: readonly string[];
+		hideComponent: boolean;
+		selfRenderHeight: number;
+	};
+	/** Cached O(1) line-count estimate for deferred off-screen expanded rendering. */
+	private estimatedExpandedLinesCache?: { version: number; width: number; count: number };
+	/** When true, `render()` returns lightweight placeholder lines instead of building the full expanded view. */
+	private deferredPlaceholder = false;
+	/** Cached placeholder array (only allocated while `deferredPlaceholder` is active). */
+	private placeholderCache?: { count: number; lines: readonly string[] };
 
 	constructor(
 		toolName: string,
@@ -100,7 +125,76 @@ export class ToolExecutionComponent extends Container {
 			this.addChild(this.contentTextRegion);
 		}
 
-		this.updateDisplay();
+		this.markDisplayDirty();
+	}
+
+	private markDisplayDirty(): void {
+		this.stateVersion += 1;
+		this.displayedExpanded = undefined;
+		this.collapsedRenderCache = undefined;
+		this.expandedRenderCache = undefined;
+		this.estimatedExpandedLinesCache = undefined;
+		this.placeholderCache = undefined;
+		this.deferredPlaceholder = false;
+	}
+
+	/** True while this component returned placeholder lines instead of its real expanded render. */
+	isDeferredPlaceholder(): boolean {
+		return this.expanded && this.deferredPlaceholder && !this.isPartial && this.result !== undefined;
+	}
+
+	/** Whether this component has cached rendered lines for its current `expanded` state at `width`. */
+	hasCachedRender(width: number): boolean {
+		if (this.argsPending) return false;
+		const cache = this.expanded ? this.expandedRenderCache : this.collapsedRenderCache;
+		return cache !== undefined && cache.width === width && cache.version === this.stateVersion;
+	}
+
+	/**
+	 * Request lightweight placeholder rendering when expanded and off-screen, or materialize the real view.
+	 * Only affects uncached expanded tools; once rendered for real, cached lines are always returned.
+	 */
+	setDeferredPlaceholder(deferred: boolean): void {
+		this.deferredPlaceholder = deferred;
+		if (!deferred) this.placeholderCache = undefined;
+	}
+
+	/** Fast O(N_bytes) line-count estimate for an unrendered expanded tool at `width` (no syntax highlighting or wrapping). */
+	estimateExpandedHeight(width: number): number {
+		const cached = this.estimatedExpandedLinesCache;
+		if (cached && cached.version === this.stateVersion && cached.width === width) {
+			return cached.count;
+		}
+		const contentWidth = Math.max(1, width - this.outputPad * 2);
+		let lines = 4; // spacer + header + top/bottom box padding
+		const result = this.result;
+		if (result?.content) {
+			for (const block of result.content) {
+				if (block.type === "text" && block.text) {
+					const text = block.text;
+					let lineStart = 0;
+					for (let i = 0; i < text.length; i++) {
+						if (text.charCodeAt(i) === 10) {
+							const len = i - lineStart;
+							lines += len > contentWidth ? Math.ceil(len / contentWidth) : 1;
+							lineStart = i + 1;
+						}
+					}
+					const tail = text.length - lineStart;
+					lines += tail > contentWidth ? Math.ceil(tail / contentWidth) : 1;
+				}
+			}
+		}
+		if (result?.details?.diff && typeof result.details.diff === "string") {
+			const diff = result.details.diff as string;
+			for (let i = 0; i < diff.length; i++) {
+				if (diff.charCodeAt(i) === 10) lines++;
+			}
+			lines += 2;
+		}
+		const count = Math.max(4, lines);
+		this.estimatedExpandedLinesCache = { version: this.stateVersion, width, count };
+		return count;
 	}
 
 	private getCallRenderer(): ToolDefinition<any, any>["renderCall"] | undefined {
@@ -178,17 +272,22 @@ export class ToolExecutionComponent extends Container {
 	updateArgs(args: any): void {
 		this.args = args;
 		this.argsPending = true;
+		this.markDisplayDirty();
 		this.ui.requestRender();
 	}
 
 	markExecutionStarted(): void {
 		this.executionStarted = true;
+		this.markDisplayDirty();
+		// Run updateDisplay() immediately so bash/shell call renderers start their live elapsed timer
+		// when execution begins rather than waiting until the first render call.
 		this.updateDisplay();
 		this.ui.requestRender();
 	}
 
 	setArgsComplete(): void {
 		this.argsComplete = true;
+		this.markDisplayDirty();
 		this.updateDisplay();
 		this.ui.requestRender();
 	}
@@ -205,70 +304,137 @@ export class ToolExecutionComponent extends Container {
 	): void {
 		this.result = result;
 		this.isPartial = isPartial;
-		this.updateDisplay();
+		this.markDisplayDirty();
+		// Stop live timers or trigger async image transcoding promptly on result updates,
+		// except when constructing/hydrating completed historical tools? No — updateResult
+		// is called once per tool result (2,500 tools took only ~15 ms total during startup).
+		// Keep updateDisplay() here when partial or when a live timer/image is present!
+		if (isPartial || this.executionStarted || result.content.some((c) => c.type === "image")) {
+			this.updateDisplay();
+		}
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
 		this.expanded = expanded;
-		this.updateDisplay();
+		// Do not rebuild synchronously: toggling C-o across thousands of tools would eagerly run
+		// every tool's renderer/syntax highlighter even for off-screen tools. `render()` / `handleMouse()`
+		// will hit the per-mode cache or call `updateDisplay()` on demand.
+		if (!expanded) {
+			this.deferredPlaceholder = false;
+			this.placeholderCache = undefined;
+		}
 	}
 
 	setOutputPad(outputPad: number): void {
+		if (this.outputPad === outputPad) return;
 		this.outputPad = outputPad;
-		this.updateDisplay();
+		this.markDisplayDirty();
 	}
 
 	setShowImages(show: boolean): void {
+		if (this.showImages === show) return;
 		this.showImages = show;
-		this.updateDisplay();
+		this.markDisplayDirty();
 	}
 
 	setImageWidthCells(width: number): void {
-		this.imageWidthCells = Math.max(1, Math.floor(width));
-		this.updateDisplay();
+		const next = Math.max(1, Math.floor(width));
+		if (this.imageWidthCells === next) return;
+		this.imageWidthCells = next;
+		this.markDisplayDirty();
 	}
 
 	override invalidate(): void {
 		super.invalidate();
-		this.updateDisplay();
+		this.markDisplayDirty();
 	}
 
 	override render(width: number): readonly string[] {
-		if (this.argsPending) this.updateDisplay();
-		if (this.hideComponent) {
-			return [];
+		const cached = this.expanded ? this.expandedRenderCache : this.collapsedRenderCache;
+		if (!this.argsPending && cached && cached.width === width && cached.version === this.stateVersion) {
+			this.hideComponent = cached.hideComponent;
+			this.selfRenderHeight = cached.selfRenderHeight;
+			this.deferredPlaceholder = false;
+			this.placeholderCache = undefined;
+			return cached.lines;
 		}
 
+		if (this.expanded && this.deferredPlaceholder && !this.isPartial && this.result) {
+			const count = this.estimateExpandedHeight(width);
+			if (!this.placeholderCache || this.placeholderCache.count !== count) {
+				const lines = new Array<string>(count);
+				lines[0] = "";
+				// Non-blank marker (dim ellipsis on line 1, single-space reset on rest) so quiet-transcript
+				// never collapses placeholder rows into blank lines; off-screen tools materialize before paint.
+				const fill = "\x1b[0m";
+				for (let i = 1; i < count; i++) lines[i] = fill;
+				this.placeholderCache = { count, lines };
+			}
+			return this.placeholderCache.lines;
+		}
+
+		if (this.argsPending || this.displayedExpanded !== this.expanded) {
+			this.updateDisplay();
+		}
+		if (this.hideComponent) {
+			const empty: readonly string[] = [];
+			const entry = { width, version: this.stateVersion, lines: empty, hideComponent: true, selfRenderHeight: 0 };
+			if (this.expanded) this.expandedRenderCache = entry;
+			else this.collapsedRenderCache = entry;
+			return empty;
+		}
+
+		let rendered: readonly string[];
 		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
 			const contentLines = this.selfRenderContainer.render(width);
 			this.selfRenderHeight = contentLines.length;
 			if (contentLines.length === 0 && this.imageComponents.length === 0) {
-				return [];
-			}
-
-			const lines: string[] = [];
-			if (contentLines.length > 0) {
-				lines.push("");
-				// Append in a loop: spreading hundreds of thousands of wrapped lines exceeds V8's argument limit.
-				for (const line of contentLines) lines.push(line);
-			}
-			for (let i = 0; i < this.imageComponents.length; i++) {
-				const spacer = this.imageSpacers[i];
-				if (spacer) {
-					lines.push(...spacer.render(width));
+				rendered = [];
+			} else {
+				const lines: string[] = [];
+				if (contentLines.length > 0) {
+					lines.push("");
+					// Append in a loop: spreading hundreds of thousands of wrapped lines exceeds V8's argument limit.
+					for (const line of contentLines) lines.push(line);
 				}
-				const imageComponent = this.imageComponents[i];
-				if (imageComponent) {
-					lines.push(...imageComponent.render(width));
+				for (let i = 0; i < this.imageComponents.length; i++) {
+					const spacer = this.imageSpacers[i];
+					if (spacer) {
+						lines.push(...spacer.render(width));
+					}
+					const imageComponent = this.imageComponents[i];
+					if (imageComponent) {
+						lines.push(...imageComponent.render(width));
+					}
 				}
+				rendered = lines;
 			}
-			return lines;
+		} else {
+			rendered = super.render(width);
 		}
 
-		return super.render(width);
+		const entry = {
+			width,
+			version: this.stateVersion,
+			lines: rendered,
+			hideComponent: this.hideComponent,
+			selfRenderHeight: this.selfRenderHeight,
+		};
+		if (this.expanded) {
+			this.expandedRenderCache = entry;
+			this.deferredPlaceholder = false;
+			this.placeholderCache = undefined;
+		} else {
+			this.collapsedRenderCache = entry;
+		}
+		return rendered;
 	}
 
 	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		if (this.argsPending || this.displayedExpanded !== this.expanded) {
+			this.updateDisplay();
+		}
 		if (!this.hasRendererDefinition() || this.getRenderShell() !== "self") return super.handleMouse(event);
 		if (event.y <= 0 || event.y > this.selfRenderHeight) return undefined;
 		return this.selfRenderContainer.handleMouse({
@@ -280,6 +446,9 @@ export class ToolExecutionComponent extends Container {
 
 	private updateDisplay(): void {
 		this.argsPending = false;
+		this.displayedExpanded = this.expanded;
+		const previousImages = this.imageComponents;
+		const previousSources = this.imageSources;
 		const bgFn = this.isPartial
 			? (text: string) => theme.bg("toolPendingBg", text)
 			: this.result?.isError
@@ -349,8 +518,7 @@ export class ToolExecutionComponent extends Container {
 			hasContent = true;
 		}
 
-		const previousImages = this.imageComponents;
-		const previousSources = this.imageSources;
+		// Remove duplicate declaration below; reuse previousImages / previousSources captured at start.
 		for (const img of this.imageComponents) {
 			this.removeChild(img);
 		}

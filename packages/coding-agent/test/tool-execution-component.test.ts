@@ -774,4 +774,57 @@ describe("ToolExecutionComponent parity", () => {
 			expect(collapsed.indexOf(":120-329")).toBeLessThan(collapsed.indexOf("to expand"));
 		});
 	}
+
+	test("caches collapsed and expanded renders separately and defers off-screen placeholders cleanly", () => {
+		let resultRenderCalls = 0;
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition(),
+			renderCall: () => new Text("call header", 0, 0),
+			renderResult: (_result, options) => {
+				resultRenderCalls += 1;
+				return new Text(options.expanded ? "line 1\nline 2\nline 3\nline 4\nline 5" : "preview", 0, 0);
+			},
+		};
+		const component = new ToolExecutionComponent(
+			"custom_tool",
+			"tool-cache",
+			{},
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{ content: [{ type: "text", text: "line 1\nline 2\nline 3\nline 4\nline 5" }], details: {}, isError: false },
+			false,
+		);
+		expect(resultRenderCalls).toBe(0);
+
+		const collapsed1 = component.render(80);
+		expect(resultRenderCalls).toBe(1);
+		expect(stripAnsi(collapsed1.join("\n"))).toContain("preview");
+
+		// Expanding with deferred placeholder skips resultRenderer until materialized.
+		component.setExpanded(true);
+		component.setDeferredPlaceholder(true);
+		expect(component.isDeferredPlaceholder()).toBe(true);
+		const placeholder = component.render(80);
+		expect(resultRenderCalls).toBe(1);
+		expect(placeholder.length).toBeGreaterThanOrEqual(4);
+
+		// Materializing runs resultRenderer once and caches the expanded lines.
+		component.setDeferredPlaceholder(false);
+		const expanded1 = component.render(80);
+		expect(resultRenderCalls).toBe(2);
+		expect(stripAnsi(expanded1.join("\n"))).toContain("line 5");
+
+		// Toggling collapsed -> expanded again hits both caches with zero extra renderer calls.
+		component.setExpanded(false);
+		const collapsed2 = component.render(80);
+		expect(collapsed2).toBe(collapsed1);
+		component.setExpanded(true);
+		const expanded2 = component.render(80);
+		expect(expanded2).toBe(expanded1);
+		expect(resultRenderCalls).toBe(2);
+	});
 });

@@ -1072,6 +1072,7 @@ export class InteractiveMode {
 		});
 		this.transcriptScrollView = viewport.transcript;
 		this.fullscreenLayoutRoot = viewport.root;
+		this.wrapTranscriptScrollForHydration(viewport.transcript);
 		this.mountInteractiveTui(this.renderer, [
 			this.documentContainer,
 			this.pendingMessagesContainer,
@@ -4794,6 +4795,245 @@ export class InteractiveMode {
 		}
 	}
 
+	// Deferred off-screen expandable component hydration timer (hydrates off-screen
+	// ToolExecutionComponents and CompactionSummaryMessageComponents in tiny non-blocking
+	// slices after Ctrl+O so the initial toggle completes in ~10-20 ms).
+	private toolHydrationTimer?: ReturnType<typeof setTimeout>;
+	private toolHydrationQueue: Array<ToolExecutionComponent | CompactionSummaryMessageComponent> = [];
+
+	/**
+	 * When the user scrolls while deferred off-screen tools are still hydrating, materialize any
+	 * tools entering the viewport immediately before painting so placeholder lines never appear.
+	 */
+	private wrapTranscriptScrollForHydration(scrollView: TuiLayouts.ScrollView): void {
+		const origScrollBy = scrollView.scrollBy.bind(scrollView);
+		const origScrollTo = scrollView.scrollTo.bind(scrollView);
+		const origScrollToStart = scrollView.scrollToStart.bind(scrollView);
+		const origScrollToEnd = scrollView.scrollToEnd.bind(scrollView);
+		const onScroll = () => {
+			if (this.toolHydrationQueue.length > 0 && this.materializeVisibleDeferredTools()) {
+				this.ui.requestRender();
+			}
+		};
+		scrollView.scrollBy = (lines: number) => {
+			const result = origScrollBy(lines);
+			onScroll();
+			return result;
+		};
+		scrollView.scrollTo = (row: number, options?: Parameters<TuiLayouts.ScrollView["scrollTo"]>[1]) => {
+			origScrollTo(row, options);
+			onScroll();
+		};
+		scrollView.scrollToStart = () => {
+			origScrollToStart();
+			onScroll();
+		};
+		scrollView.scrollToEnd = () => {
+			origScrollToEnd();
+			onScroll();
+		};
+	}
+
+	private cancelToolHydration(): void {
+		if (this.toolHydrationTimer) {
+			clearTimeout(this.toolHydrationTimer);
+			this.toolHydrationTimer = undefined;
+		}
+		this.toolHydrationQueue = [];
+	}
+
+	private isDeferrableExpandable(
+		child: Component,
+	): child is ToolExecutionComponent | CompactionSummaryMessageComponent {
+		return child instanceof ToolExecutionComponent || child instanceof CompactionSummaryMessageComponent;
+	}
+
+	/**
+	 * Estimate which child in `chatContainer` is closest to the viewport and materialize the
+	 * expandable components around it immediately; defer far off-screen uncached ones so the
+	 * C-o frame stays under ~20 ms, then hydrate the rest in small idle slices.
+	 */
+	private prepareExpandedToolsForViewport(): void {
+		this.cancelToolHydration();
+		const scrollView = this.transcriptScrollView;
+		// Only defer in fullscreen mode where a ScrollView clips to the viewport.
+		if (!scrollView || this.renderer.mode !== "fullscreen") return;
+
+		const width = Math.max(1, scrollView.getContentWidth(this.ui.terminal.columns));
+		const viewportHeight = Math.max(20, scrollView.viewportHeight || this.ui.terminal.rows);
+		const children = this.chatContainer.children;
+		if (children.length === 0) return;
+
+		// Find anchor child index: bottom if following end, otherwise approximate by scroll position.
+		let anchorIndex = children.length - 1;
+		if (!scrollView.isFollowingEnd) {
+			const layout = this.chatContainer as unknown as {
+				mouseLayout?: { children: Array<{ component: Component; height: number }> };
+			};
+			const parts = layout.mouseLayout?.children;
+			const docLayout = this.documentContainer as unknown as {
+				mouseLayout?: { children: Array<{ component: Component; height: number }> };
+			};
+			let chatOffset = 0;
+			for (const docPart of docLayout.mouseLayout?.children ?? []) {
+				if (docPart.component === this.chatContainer) break;
+				chatOffset += docPart.height;
+			}
+			const targetRow = Math.max(0, scrollView.scrollTop - chatOffset);
+			if (parts && parts.length > 0) {
+				let y = 0;
+				for (const part of parts) {
+					if (y + part.height > targetRow) {
+						// Component may be a direct child or a quiet-transcript wrapper carrying `.child` / `.rows`.
+						const direct = part.component;
+						const unwrapped =
+							(direct as { child?: Component }).child ??
+							(direct as { rows?: Array<Array<{ owner?: Component }>> }).rows?.[0]?.[0]?.owner ??
+							direct;
+						const idx = children.indexOf(unwrapped);
+						if (idx >= 0) anchorIndex = idx;
+						break;
+					}
+					y += part.height;
+				}
+			} else if (scrollView.scrollTop === 0) {
+				anchorIndex = 0;
+			}
+		}
+
+		const deferred: Array<ToolExecutionComponent | CompactionSummaryMessageComponent> = [];
+		const toMaterialize = new Set<ToolExecutionComponent | CompactionSummaryMessageComponent>();
+		for (const child of children) {
+			if (this.isDeferrableExpandable(child) && !child.hasCachedRender(width)) {
+				child.setDeferredPlaceholder(true);
+			}
+		}
+
+		const budgetEachSide = viewportHeight + 250;
+		let linesAbove = 0;
+		for (let i = anchorIndex; i >= 0 && linesAbove < budgetEachSide; i--) {
+			const child = children[i];
+			if (child && this.isDeferrableExpandable(child)) {
+				toMaterialize.add(child);
+				linesAbove += child.estimateExpandedHeight(width);
+			} else {
+				linesAbove += 4;
+			}
+		}
+		let linesBelow = 0;
+		for (let i = anchorIndex + 1; i < children.length && linesBelow < budgetEachSide; i++) {
+			const child = children[i];
+			if (child && this.isDeferrableExpandable(child)) {
+				toMaterialize.add(child);
+				linesBelow += child.estimateExpandedHeight(width);
+			} else {
+				linesBelow += 4;
+			}
+		}
+
+		for (const item of toMaterialize) {
+			item.setDeferredPlaceholder(false);
+		}
+
+		// Queue remaining deferred items closest to the viewport first so scrolling near the anchor
+		// hits already-hydrated items immediately.
+		for (let dist = 1; anchorIndex - dist >= 0 || anchorIndex + dist < children.length; dist++) {
+			const up = anchorIndex - dist;
+			if (up >= 0) {
+				const c = children[up];
+				if (c && this.isDeferrableExpandable(c) && c.isDeferredPlaceholder()) deferred.push(c);
+			}
+			const down = anchorIndex + dist;
+			if (down < children.length) {
+				const c = children[down];
+				if (c && this.isDeferrableExpandable(c) && c.isDeferredPlaceholder()) deferred.push(c);
+			}
+		}
+
+		if (deferred.length > 0) {
+			this.toolHydrationQueue = deferred;
+			this.scheduleToolHydrationSlice();
+		}
+	}
+
+	/** Materialize any deferred expanded items currently near the viewport (e.g., after scrolling). */
+	private materializeVisibleDeferredTools(): boolean {
+		const scrollView = this.transcriptScrollView;
+		if (!scrollView || this.toolHydrationQueue.length === 0) return false;
+		const width = Math.max(1, scrollView.getContentWidth(this.ui.terminal.columns));
+		const viewportHeight = Math.max(20, scrollView.viewportHeight || this.ui.terminal.rows);
+		const top = scrollView.scrollTop;
+		const bottom = top + viewportHeight;
+		const buffer = viewportHeight * 2;
+		const layout = this.chatContainer as unknown as {
+			mouseLayout?: { children: Array<{ component: Component; height: number }> };
+		};
+		const parts = layout.mouseLayout?.children;
+		if (!parts) return false;
+		// Account for header + resources height above chatContainer inside documentContainer.
+		const docLayout = this.documentContainer as unknown as {
+			mouseLayout?: { children: Array<{ component: Component; height: number }> };
+		};
+		let chatOffset = 0;
+		for (const docPart of docLayout.mouseLayout?.children ?? []) {
+			if (docPart.component === this.chatContainer) break;
+			chatOffset += docPart.height;
+		}
+		let y = chatOffset;
+		let materialized = false;
+		for (const part of parts) {
+			const h = part.height;
+			if (y + h >= top - buffer && y <= bottom + buffer) {
+				const direct = part.component;
+				const unwrapped = (direct as { child?: Component }).child ?? direct;
+				if (this.isDeferrableExpandable(unwrapped) && unwrapped.isDeferredPlaceholder()) {
+					unwrapped.setDeferredPlaceholder(false);
+					unwrapped.render(width);
+					materialized = true;
+				}
+			}
+			y += h;
+		}
+		return materialized;
+	}
+
+	private scheduleToolHydrationSlice(): void {
+		if (this.toolHydrationTimer || this.toolHydrationQueue.length === 0) return;
+		this.toolHydrationTimer = setTimeout(() => {
+			this.toolHydrationTimer = undefined;
+			if (!this.toolOutputExpanded || this.toolHydrationQueue.length === 0) {
+				this.cancelToolHydration();
+				return;
+			}
+			const scrollView = this.transcriptScrollView;
+			const width = scrollView
+				? Math.max(1, scrollView.getContentWidth(this.ui.terminal.columns))
+				: Math.max(1, this.ui.terminal.columns);
+			// First materialize anything near the current scroll position immediately!
+			const visibleMaterialized = this.materializeVisibleDeferredTools();
+			// Then hydrate a small 6 ms slice of remaining off-screen tools so the UI stays 60fps responsive.
+			const deadline = performance.now() + 6;
+			let hydratedCount = 0;
+			while (this.toolHydrationQueue.length > 0 && performance.now() < deadline) {
+				const tool = this.toolHydrationQueue.shift()!;
+				if (!tool.isDeferredPlaceholder()) continue;
+				tool.setDeferredPlaceholder(false);
+				tool.render(width);
+				hydratedCount += 1;
+			}
+			// Request a repaint immediately if anything near the viewport materialized, or when
+			// background hydration finishes (so search/scrollbar get exact final lines without
+			// paying 180k-line Container/flow rebuilds on every 16ms tick!).
+			if (visibleMaterialized || (hydratedCount > 0 && this.toolHydrationQueue.length === 0)) {
+				this.ui.requestRender();
+			}
+			if (this.toolHydrationQueue.length > 0) {
+				this.scheduleToolHydrationSlice();
+			}
+		}, 16);
+		this.toolHydrationTimer.unref?.();
+	}
+
 	private toggleToolOutputExpansion(): void {
 		this.setToolsExpanded(!this.toolOutputExpanded);
 	}
@@ -4802,6 +5042,9 @@ export class InteractiveMode {
 		if (expanded === this.toolOutputExpanded) return;
 
 		this.toolOutputExpanded = expanded;
+		if (!expanded) {
+			this.cancelToolHydration();
+		}
 		const activeHeader = this.customHeader ?? this.builtInHeader;
 		if (isExpandable(activeHeader)) {
 			activeHeader.setExpanded(expanded);
@@ -4812,6 +5055,9 @@ export class InteractiveMode {
 					child.setExpanded(expanded);
 				}
 			}
+		}
+		if (expanded) {
+			this.prepareExpandedToolsForViewport();
 		}
 		this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
 	}
@@ -7337,6 +7583,7 @@ export class InteractiveMode {
 	}
 
 	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
+		this.cancelToolHydration();
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
