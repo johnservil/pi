@@ -1,4 +1,6 @@
-> **Fork (`johnservil/pi`)**: carries a fix for OpenRouter normalizing Google Gemini's `native_finish_reason: "MALFORMED_RESPONSE"` to `finish_reason: "stop"` (upstream issue [earendil-works/pi#12407](https://github.com/earendil-works/pi/issues/12407)). The clean upstream-ready commit is on branch [`fix/openrouter-native-finish-reason`](https://github.com/johnservil/pi/tree/fix/openrouter-native-finish-reason) (`9ce43c3`), and is merged into `main` here.
+> **Fork (`johnservil/pi`)**: carries:
+> 1. A fix for OpenRouter normalizing Google Gemini's `native_finish_reason: "MALFORMED_RESPONSE"` to `finish_reason: "stop"` (upstream issue [earendil-works/pi#12407](https://github.com/earendil-works/pi/issues/12407); [root-cause writeup](docs/openrouter-malformed-response-root-cause.md); clean upstream-ready commit on branch [`fix/openrouter-native-finish-reason`](https://github.com/johnservil/pi/tree/fix/openrouter-native-finish-reason), `9ce43c3`).
+> 2. Cached + viewport-first `Ctrl+O` tool expansion (`09d8e3c`, 20x–65x faster on long scrollbacks).
 >
 > **Build and install this fork from source** (Node.js 22.19+ required):
 > ```sh
