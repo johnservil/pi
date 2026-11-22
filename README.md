@@ -1,3 +1,20 @@
+> **Fork (`johnservil/pi`)**: carries a fix for OpenRouter normalizing Google Gemini's `native_finish_reason: "MALFORMED_RESPONSE"` to `finish_reason: "stop"` (upstream issue [earendil-works/pi#12407](https://github.com/earendil-works/pi/issues/12407)). The clean upstream-ready commit is on branch [`fix/openrouter-native-finish-reason`](https://github.com/johnservil/pi/tree/fix/openrouter-native-finish-reason) (`9ce43c3`), and is merged into `main` here.
+>
+> **Build and install this fork from source** (Node.js 22.19+ required):
+> ```sh
+> git clone --depth=50 https://github.com/johnservil/pi.git ~/pi-fork
+> cd ~/pi-fork
+> npm ci --ignore-scripts
+> npm run hydrate:model-data
+> npm run build:offline
+> # Put the built CLI ahead of any stock `pi` in your PATH:
+> mkdir -p ~/.local/bin
+> ln -sf "$PWD/packages/coding-agent/dist/bundle/cli.js" ~/.local/bin/pi
+> # Verify (make sure ~/.local/bin is before other node/npm bin dirs in PATH):
+> which pi && pi --version
+> ```
+> To roll back to stock `pi`, remove the symlink (`rm ~/.local/bin/pi`). To resume an existing session after switching, `/quit` and run `pi -c`.
+
 <p align="center">
   <a href="https://pi.dev">
     <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
