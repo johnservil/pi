@@ -157,6 +157,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 			pendingMessagesContainer: { children: [] },
 			ui: { requestRender: vi.fn() },
 			showStatus: vi.fn(),
+			prepareExpandedToolsForViewport: vi.fn(),
 		};
 
 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
@@ -165,6 +166,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(loadedResourcesChild.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
+		expect(fakeThis.prepareExpandedToolsForViewport).toHaveBeenCalledTimes(1);
 		expect(fakeThis.showStatus).toHaveBeenCalledWith("Tool output: expanded");
 	});
 });
@@ -196,6 +198,10 @@ describe("InteractiveMode pending user bash output", () => {
 		};
 		for (const name of [
 			"setToolsExpanded",
+			// Expanding lays out the tools near the viewport first. Without a fullscreen scroll view
+			// (none here) that does nothing.
+			"prepareExpandedToolsForViewport",
+			"cancelToolHydration",
 			"updatePendingMessagesDisplay",
 			"getAllQueuedMessages",
 			"flushPendingBashComponents",

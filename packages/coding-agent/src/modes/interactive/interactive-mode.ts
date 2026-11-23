@@ -4796,7 +4796,7 @@ export class InteractiveMode {
 	}
 
 	// Deferred off-screen expandable component hydration timer (hydrates off-screen
-	// ToolExecutionComponents and CompactionSummaryMessageComponents in tiny non-blocking
+	// ToolExecutionComponents and CompactionSummaryMessageComponents in short non-blocking
 	// slices after Ctrl+O so the initial toggle completes in ~10-20 ms).
 	private toolHydrationTimer?: ReturnType<typeof setTimeout>;
 	private toolHydrationQueue: Array<ToolExecutionComponent | CompactionSummaryMessageComponent> = [];
@@ -4849,6 +4849,33 @@ export class InteractiveMode {
 	}
 
 	/**
+	 * What the chat container last drew, and the row it starts on in the scroll view's content:
+	 * `rows[i]` took `heights[i].length` rows. A container keeps this as its `childLines`. Under
+	 * the quiet-transcript extension the chat container draws rows of its own in place of its
+	 * children; chatChildOf() names the child that such a row shows.
+	 */
+	private drawnChatRows():
+		| { top: number; rows: readonly Component[]; heights: readonly { length: number }[] }
+		| undefined {
+		type Drawn = { childLines?: { children: readonly Component[]; parts: readonly { length: number }[] } };
+		const document = (this.documentContainer as unknown as Drawn).childLines;
+		const chat = (this.chatContainer as unknown as Drawn).childLines;
+		if (!document || !chat || chat.children.length === 0) return undefined;
+		let top = 0;
+		for (let index = 0; index < document.children.length; index++) {
+			if (document.children[index] === this.chatContainer) break;
+			top += document.parts[index]!.length;
+		}
+		return { top, rows: chat.children, heights: chat.parts };
+	}
+
+	/** The chat child that a drawn row shows: the row itself, or the block a quiet-transcript row stands for. */
+	private chatChildOf(row: Component): Component {
+		const quiet = row as { child?: Component; rows?: Array<Array<{ owner?: Component }>> };
+		return quiet.child ?? quiet.rows?.[0]?.[0]?.owner ?? row;
+	}
+
+	/**
 	 * Estimate which child in `chatContainer` is closest to the viewport and materialize the
 	 * expandable components around it immediately; defer far off-screen uncached ones so the
 	 * C-o frame stays under ~20 ms, then hydrate the rest in small idle slices.
@@ -4867,34 +4894,18 @@ export class InteractiveMode {
 		// Find anchor child index: bottom if following end, otherwise approximate by scroll position.
 		let anchorIndex = children.length - 1;
 		if (!scrollView.isFollowingEnd) {
-			const layout = this.chatContainer as unknown as {
-				mouseLayout?: { children: Array<{ component: Component; height: number }> };
-			};
-			const parts = layout.mouseLayout?.children;
-			const docLayout = this.documentContainer as unknown as {
-				mouseLayout?: { children: Array<{ component: Component; height: number }> };
-			};
-			let chatOffset = 0;
-			for (const docPart of docLayout.mouseLayout?.children ?? []) {
-				if (docPart.component === this.chatContainer) break;
-				chatOffset += docPart.height;
-			}
-			const targetRow = Math.max(0, scrollView.scrollTop - chatOffset);
-			if (parts && parts.length > 0) {
+			const drawn = this.drawnChatRows();
+			if (drawn) {
+				const targetRow = Math.max(0, scrollView.scrollTop - drawn.top);
 				let y = 0;
-				for (const part of parts) {
-					if (y + part.height > targetRow) {
-						// Component may be a direct child or a quiet-transcript wrapper carrying `.child` / `.rows`.
-						const direct = part.component;
-						const unwrapped =
-							(direct as { child?: Component }).child ??
-							(direct as { rows?: Array<Array<{ owner?: Component }>> }).rows?.[0]?.[0]?.owner ??
-							direct;
-						const idx = children.indexOf(unwrapped);
+				for (let index = 0; index < drawn.rows.length; index++) {
+					const height = drawn.heights[index]!.length;
+					if (y + height > targetRow) {
+						const idx = children.indexOf(this.chatChildOf(drawn.rows[index]!));
 						if (idx >= 0) anchorIndex = idx;
 						break;
 					}
-					y += part.height;
+					y += height;
 				}
 			} else if (scrollView.scrollTop === 0) {
 				anchorIndex = 0;
@@ -4965,34 +4976,21 @@ export class InteractiveMode {
 		const top = scrollView.scrollTop;
 		const bottom = top + viewportHeight;
 		const buffer = viewportHeight * 2;
-		const layout = this.chatContainer as unknown as {
-			mouseLayout?: { children: Array<{ component: Component; height: number }> };
-		};
-		const parts = layout.mouseLayout?.children;
-		if (!parts) return false;
-		// Account for header + resources height above chatContainer inside documentContainer.
-		const docLayout = this.documentContainer as unknown as {
-			mouseLayout?: { children: Array<{ component: Component; height: number }> };
-		};
-		let chatOffset = 0;
-		for (const docPart of docLayout.mouseLayout?.children ?? []) {
-			if (docPart.component === this.chatContainer) break;
-			chatOffset += docPart.height;
-		}
-		let y = chatOffset;
+		const drawn = this.drawnChatRows();
+		if (!drawn) return false;
+		let y = drawn.top;
 		let materialized = false;
-		for (const part of parts) {
-			const h = part.height;
-			if (y + h >= top - buffer && y <= bottom + buffer) {
-				const direct = part.component;
-				const unwrapped = (direct as { child?: Component }).child ?? direct;
-				if (this.isDeferrableExpandable(unwrapped) && unwrapped.isDeferredPlaceholder()) {
-					unwrapped.setDeferredPlaceholder(false);
-					unwrapped.render(width);
+		for (let index = 0; index < drawn.rows.length && y <= bottom + buffer; index++) {
+			const height = drawn.heights[index]!.length;
+			if (y + height >= top - buffer) {
+				const child = this.chatChildOf(drawn.rows[index]!);
+				if (this.isDeferrableExpandable(child) && child.isDeferredPlaceholder()) {
+					child.setDeferredPlaceholder(false);
+					child.render(width);
 					materialized = true;
 				}
 			}
-			y += h;
+			y += height;
 		}
 		return materialized;
 	}
@@ -5011,8 +5009,11 @@ export class InteractiveMode {
 				: Math.max(1, this.ui.terminal.columns);
 			// First materialize anything near the current scroll position immediately!
 			const visibleMaterialized = this.materializeVisibleDeferredTools();
-			// Then hydrate a small 6 ms slice of remaining off-screen tools so the UI stays 60fps responsive.
-			const deadline = performance.now() + 6;
+			// Then hydrate a slice of the remaining off-screen tools. Until they are all done the rows
+			// above a reader are estimates, and a long scroll moves through them at their estimated
+			// sizes: so the slices are 12 ms with 4 ms between them for input and frames, which
+			// finishes a transcript of thousands of tools in a second or two.
+			const deadline = performance.now() + 12;
 			let hydratedCount = 0;
 			while (this.toolHydrationQueue.length > 0 && performance.now() < deadline) {
 				const tool = this.toolHydrationQueue.shift()!;
@@ -5023,14 +5024,14 @@ export class InteractiveMode {
 			}
 			// Request a repaint immediately if anything near the viewport materialized, or when
 			// background hydration finishes (so search/scrollbar get exact final lines without
-			// paying 180k-line Container/flow rebuilds on every 16ms tick!).
+			// paying 180k-line Container/flow rebuilds on every tick!).
 			if (visibleMaterialized || (hydratedCount > 0 && this.toolHydrationQueue.length === 0)) {
 				this.ui.requestRender();
 			}
 			if (this.toolHydrationQueue.length > 0) {
 				this.scheduleToolHydrationSlice();
 			}
-		}, 16);
+		}, 4);
 		this.toolHydrationTimer.unref?.();
 	}
 

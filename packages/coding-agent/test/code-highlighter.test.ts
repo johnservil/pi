@@ -54,6 +54,10 @@ describe("CodeHighlighter", () => {
 	it("write highlights unchanged first lines and a complete file only once", () => {
 		const content = Array.from({ length: 60 }, (_, i) => `const v${i} = ${i};`).join("\n");
 		const row = new ToolExecutionComponent("write", "w", { path: "a.ts", content }, {}, writeRenderers, tui, "/");
+		// A row builds its display at its first frame, not when it is made (thousands of rows of a long
+		// transcript are made that are never drawn). The first frame highlights the whole file and the
+		// second its first lines for keeping, so the count starts after two frames.
+		row.render(80);
 		row.updateArgs({ path: "a.ts", content: `${content} //` });
 		row.render(80);
 		const highlight = vi.spyOn(syntaxHighlight, "highlight");

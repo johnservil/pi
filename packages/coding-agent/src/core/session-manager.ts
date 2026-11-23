@@ -1002,6 +1002,8 @@ export class SessionManager {
 	private persist: boolean;
 	private flushed: boolean = false;
 	private fileEntries: FileEntry[] = [];
+	/** The session name as of the first `count` entries of `entries`. See getSessionName(). */
+	private sessionNameSeen?: { entries: FileEntry[]; count: number; name: string | undefined };
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
@@ -1336,16 +1338,23 @@ export class SessionManager {
 
 	/** Get the current session name from the latest session_info entry, if any. */
 	getSessionName(): string | undefined {
-		// Walk entries in reverse to find the latest session_info entry.
-		// Empty names explicitly clear the session title. Reads fileEntries directly: the footer
-		// calls this on every frame, and getEntries() copies the whole session.
-		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
-			const entry = this.fileEntries[i];
+		// The latest session_info entry names the session. Empty names explicitly clear the title.
+		// The footer calls this on every frame, and a session without a name has no such entry, so a
+		// walk from the end read every entry of the session on every frame. Entries are only appended
+		// (a rebuild makes a new array), so the answer is kept and only the entries since are read.
+		const entries = this.fileEntries;
+		const seen = this.sessionNameSeen;
+		const known = seen !== undefined && seen.entries === entries && seen.count <= entries.length;
+		if (known && seen.count === entries.length) return seen.name;
+		let name = known ? seen.name : undefined;
+		for (let i = known ? seen.count : 0; i < entries.length; i++) {
+			const entry = entries[i];
 			if (entry.type === "session_info") {
-				return entry.name?.trim() || undefined;
+				name = entry.name?.trim() || undefined;
 			}
 		}
-		return undefined;
+		this.sessionNameSeen = { entries, count: entries.length, name };
+		return name;
 	}
 
 	/**
