@@ -129,6 +129,8 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// `MALFORMED_FUNCTION_CALL`), or the direct Google adapter's `Provider stopped with: ...`.
 	"provider native_finish_reason: malformed_(?:response|function_call)",
 	"provider stopped with: malformed_(?:response|function_call)",
+	// A Gemini response that begins with a turn the model invents (utils/leaked-turn.ts): it holds no reply.
+	"wrote the next turn in place of a reply",
 	// OpenRouter: "Provider returned an empty response", and its wrapper for a provider that
 	// gave up, e.g. "Upstream error from Relace: The model stopped before completing the response."
 	"returned an empty response",

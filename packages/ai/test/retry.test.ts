@@ -250,6 +250,7 @@ describe("provider retry classification", () => {
 		"Provider native_finish_reason: MALFORMED_FUNCTION_CALL",
 		"Provider stopped with: MALFORMED_RESPONSE",
 		"Provider stopped with: MALFORMED_FUNCTION_CALL",
+		"Provider wrote the next turn in place of a reply",
 		"Provider returned an empty response",
 		"Upstream error from Relace: The model stopped before completing the response.",
 	])("retries temporary provider failures: %s", (errorMessage) => {

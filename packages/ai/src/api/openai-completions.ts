@@ -35,11 +35,13 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
+import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
+import { findLeakedTurn, namesTurnsUserAndModel } from "../utils/leaked-turn.ts";
 import {
 	applyOpenRouterReportedCost,
 	isOpenRouterModel,
@@ -410,6 +412,11 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			let textBlock: TextContent | null = null;
 			let thinkingBlock: ThinkingContent | null = null;
 			let hasFinishReason = false;
+			// A Gemini reply can go on to write the next turn itself (utils/leaked-turn.ts). The reply is what
+			// arrived before that turn's first line. What arrives after it is counted here and otherwise left out:
+			// text, reasoning and tool calls alike. The stream is still read to its end, for the usage.
+			const leakedTurnScan = namesTurnsUserAndModel(model.id) ? { lineStart: 0, fence: 0 } : undefined;
+			let leakedTurn: { droppedTextLength: number; droppedToolCalls: number } | undefined;
 			const toolCallBlocksByIndex = new Map<number, ToolCall>();
 			const toolCallBlocksById = new Map<string, ToolCall>();
 			const toolCallStates = new Map<ToolCall, ToolCallState>();
@@ -579,7 +586,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					hasFinishReason = true;
 				}
 
-				if (choice.delta) {
+				if (choice.delta && leakedTurn) {
+					leakedTurn.droppedTextLength += choice.delta.content?.length ?? 0;
+					leakedTurn.droppedToolCalls += choice.delta.tool_calls?.filter((toolCall) => toolCall.id).length ?? 0;
+				} else if (choice.delta) {
 					// Handle reasoning before content: some proxies (e.g. LiteLLM) aggregate reasoning and
 					// answer into one delta, and the thinking block must precede the text block.
 					// Some endpoints return reasoning in reasoning_content (llama.cpp),
@@ -634,16 +644,29 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						choice.delta.content.length > 0
 					) {
 						const block = ensureTextBlock();
+						const streamed = block.text.length;
 						block.text += choice.delta.content;
-						stream.push({
-							type: "text_delta",
-							contentIndex: getContentIndex(block),
-							delta: choice.delta.content,
-							partial: output,
-						});
+						const leakedAt = leakedTurnScan ? findLeakedTurn(block.text, leakedTurnScan) : undefined;
+						if (leakedAt !== undefined) {
+							leakedTurn = { droppedTextLength: block.text.length - leakedAt, droppedToolCalls: 0 };
+							block.text = block.text.slice(0, leakedAt).trimEnd();
+						}
+						// The part of this delta that stays. Earlier deltas have gone out: the line breaks before
+						// the leaked line, and the line's first characters when it arrived in two deltas. `text_end`
+						// and the final message carry the text as cut.
+						const delta = block.text.slice(streamed);
+						if (delta.length > 0) {
+							stream.push({
+								type: "text_delta",
+								contentIndex: getContentIndex(block),
+								delta,
+								partial: output,
+							});
+						}
 					}
 
-					if (choice?.delta?.tool_calls) {
+					// Tool calls in the delta that brought the leaked line belong to the invented turn.
+					if (!leakedTurn && choice?.delta?.tool_calls) {
 						for (const toolCall of choice.delta.tool_calls as StreamingToolCallDelta[]) {
 							const { block, state } = ensureToolCallBlock(toolCall);
 							if (!block.id && toolCall.id) {
@@ -688,6 +711,24 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 			if (!hasFinishReason && !compat.supportsFinishReason) {
 				output.stopReason = output.content.some((block) => block.type === "toolCall") ? "toolUse" : "stop";
+			}
+			if (leakedTurn) {
+				// The reply ended where the invented turn began, so it ends as a reply does, whatever ended the
+				// invented turn (a tool call, or the provider's MALFORMED_RESPONSE). A response that holds nothing
+				// before that turn has no reply: an error to retry, as an empty malformed stop is.
+				appendAssistantMessageDiagnostic(output, {
+					type: "leaked_turn",
+					timestamp: Date.now(),
+					details: leakedTurn,
+				});
+				const calledTool = output.content.some((block) => block.type === "toolCall");
+				if (calledTool || output.content.some((block) => block.type === "text" && block.text.length > 0)) {
+					output.stopReason = calledTool ? "toolUse" : "stop";
+					delete output.errorMessage;
+				} else {
+					output.stopReason = "error";
+					output.errorMessage = "Provider wrote the next turn in place of a reply";
+				}
 			}
 			if (output.stopReason === "error") {
 				throw new Error(output.errorMessage || "Provider returned an error stop reason");
