@@ -25,6 +25,10 @@ In `~/.pi/agent/settings.json`, set `"hideThinkingBlock": true` and `"terminal":
 
 A long transcript costs little to draw again: the extension keeps its rows from one frame to the next and lays out again only from the first block that changed. It tells Pi where each block is in the way Pi 1.4 and Pi 1.6 each expect, so a wheel event or a click does not make Pi draw the transcript again to find the block under the pointer. When rows above the reader change (a tool opens, thinking shows), the row the reader had on top stays on top.
 
+## clock-timestamps.ts: single-row clock footer and inline event timestamps
+
+Replaces the default multi-row footer with a single compact row showing a live clock, session cost, context usage, tool-expansion state, and model/thinking level (dropping the cumulative token and cache counters `↑`, `↓`, `R`, `W`, `CH%`). Prepends compact inline timestamps (`*HH:MM:SS* ` on today's messages, `*YYYY-MM-DD HH:MM:SS* ` on prior days) to user messages, assistant replies, custom messages, and summaries using Pi's `registerMarkdownTransformer` API (no monkey-patching; compatible with `keep-scrollback.ts` and `quiet-transcript.ts`). Toggle transcript timestamps at runtime with `/timestamps`.
+
 ## What to know
 
 Pi's extension API has no call for either layout. While a session is open, each extension replaces a few methods of Pi's interactive mode. It puts them back when the session closes, and takes itself out with a notice if its own code throws. Check them after a Pi upgrade.
