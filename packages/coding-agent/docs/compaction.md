@@ -201,7 +201,7 @@ After navigation with summary:
 
 Default compaction and branch summarization track files cumulatively. Both extract file operations from tool calls in the messages being summarized. Compaction also carries file lists from the previous Pi-generated compaction. Branch summarization carries file lists from Pi-generated branch summaries in the entries it summarizes.
 
-File tracking therefore accumulates across default compactions and nested default branch summaries. Pi does not automatically carry file lists from extension-generated summaries whose `fromHook` field is `true`; extensions manage their own `details` format.
+File tracking therefore accumulates across default compactions and nested default branch summaries. The accumulated lists are in a compaction entry's `details`. The `<read-files>` and `<modified-files>` lists that a compaction appends to its summary text hold only the files of the messages that summary replaces, so the text the model reads does not grow with the session's age. Pi does not automatically carry file lists from extension-generated summaries whose `fromHook` field is `true`; extensions manage their own `details` format.
 
 ### BranchSummaryEntry Structure
 

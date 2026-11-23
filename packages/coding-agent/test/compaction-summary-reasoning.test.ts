@@ -128,6 +128,56 @@ describe("generateSummary reasoning options", () => {
 		});
 	});
 
+	it("lists in the summary the files of the messages it replaces, and keeps every file in the details", async () => {
+		const usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: [
+				...messages,
+				{
+					role: "assistant",
+					content: [
+						{ type: "toolCall", id: "c1", name: "read", arguments: { path: "now-read.ts" } },
+						{ type: "toolCall", id: "c2", name: "edit", arguments: { path: "now-edited.ts" } },
+					],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "test",
+					usage,
+					stopReason: "toolUse",
+					timestamp: 3,
+				},
+			],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			tokensBefore: 100,
+			// As prepareCompaction() builds it: the files of earlier compactions and these messages' own.
+			fileOps: {
+				read: new Set(["read-long-ago.ts", "now-read.ts"]),
+				written: new Set(),
+				edited: new Set(["edited-long-ago.ts", "now-edited.ts"]),
+			},
+			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
+		};
+
+		const result = await compact(preparation, createModel(false), "test-key");
+
+		expect(result.summary).toContain("<read-files>\nnow-read.ts\n</read-files>");
+		expect(result.summary).toContain("<modified-files>\nnow-edited.ts\n</modified-files>");
+		expect(result.summary).not.toContain("long-ago");
+		expect(result.details).toEqual({
+			readFiles: ["now-read.ts", "read-long-ago.ts"],
+			modifiedFiles: ["edited-long-ago.ts", "now-edited.ts"],
+		});
+	});
+
 	it("preserves the previous summary without an empty history request for a split turn", async () => {
 		const preparation: CompactionPreparation = {
 			firstKeptEntryId: "entry-keep",

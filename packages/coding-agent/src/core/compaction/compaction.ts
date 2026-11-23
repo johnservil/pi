@@ -1039,9 +1039,16 @@ export async function compact(
 		summaryUsage = result.usage;
 	}
 
-	// Compute file lists and append to summary
+	// The entry's details keep every file since the session began, for whoever asks later. The summary,
+	// which the model reads at every turn from now on, lists only the files of the messages it replaces:
+	// the whole list grew without end (62,000 characters in one long session, most of them paths of work
+	// long finished).
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
-	summary += formatFileOperations(readFiles, modifiedFiles);
+	const recentFileOps = createFileOps();
+	for (const message of messagesToSummarize) extractFileOpsFromMessage(message, recentFileOps);
+	for (const message of turnPrefixMessages) extractFileOpsFromMessage(message, recentFileOps);
+	const recent = computeFileLists(recentFileOps);
+	summary += formatFileOperations(recent.readFiles, recent.modifiedFiles);
 
 	if (!firstKeptEntryId) {
 		throw new Error("First kept entry has no UUID - session may need migration");
