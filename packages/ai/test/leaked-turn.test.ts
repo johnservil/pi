@@ -48,6 +48,20 @@ describe("findLeakedTurn", () => {
 		expect(findLeakedTurn("```\nuser\n", scan)).toBeUndefined();
 		expect(findLeakedTurn("```\nuser\n```\nuser\n", scan)).toBe(13);
 	});
+
+	it("handles CRLF, raw Gemma/Gemini turn markers, and an unterminated trailing turn line when final is true", () => {
+		expect(find("Done.\r\nuser\r\n[wake]\r\n")).toBe(7);
+		expect(find("Done.\n<|turn>user\n[wake]\n")).toBe(6);
+		expect(find("Done.\n<start_of_turn>user\n[wake]\n")).toBe(6);
+		expect(find("```\n<|turn>user\n```\n")).toBeUndefined();
+
+		const scan = { lineStart: 0, fence: 0 };
+		expect(findLeakedTurn("Done.\nuser", scan, false)).toBeUndefined();
+		expect(findLeakedTurn("Done.\nuser", scan, true)).toBe(6);
+
+		const fencedFinal = { lineStart: 0, fence: 0 };
+		expect(findLeakedTurn("```\nuser", fencedFinal, true)).toBeUndefined();
+	});
 });
 
 describe("namesTurnsUserAndModel", () => {

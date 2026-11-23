@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -136,6 +136,69 @@ function outputBytes(metafiles) {
 		0,
 	);
 }
+
+const workspacePackages = [
+	"telemetry",
+	"schema",
+	"chord",
+	"tui",
+	"codemode",
+	"mcp",
+	"ai",
+	"durable",
+	"env",
+	"agent",
+	"coding-agent",
+];
+
+function collectTsSources(dir, skipDirs = new Set()) {
+	const out = [];
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		const full = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			if (skipDirs.has(entry.name)) continue;
+			out.push(...collectTsSources(full, skipDirs));
+		} else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
+			out.push(full);
+		}
+	}
+	return out;
+}
+
+/**
+ * Refuse to bundle stale workspace `dist/` artifacts. Running only
+ * `packages/coding-agent`'s build script after editing `packages/ai/src`
+ * silently bundled outdated pre-edit JS; require every compiled `.js` in
+ * every workspace dependency to exist and be at least as new as its `.ts`.
+ */
+function validateWorkspaceDistFresh() {
+	const stale = [];
+	for (const pkg of workspacePackages) {
+		const pkgDir = join(repoRoot, "packages", pkg);
+		const srcDir = join(pkgDir, "src");
+		const distDir = join(pkgDir, "dist");
+		if (!existsSync(srcDir)) continue;
+		const skipDirs = pkg === "coding-agent" ? new Set(["experimental"]) : new Set();
+		for (const srcPath of collectTsSources(srcDir, skipDirs)) {
+			const rel = relative(srcDir, srcPath);
+			const distPath = join(distDir, `${rel.slice(0, -3)}.js`);
+			if (!existsSync(distPath)) {
+				stale.push(`${relative(repoRoot, distPath)} (missing for ${relative(repoRoot, srcPath)})`);
+			} else if (statSync(distPath).mtimeMs < statSync(srcPath).mtimeMs) {
+				stale.push(`${relative(repoRoot, distPath)} (older than ${relative(repoRoot, srcPath)})`);
+			}
+		}
+	}
+	if (stale.length > 0) {
+		const preview = stale.slice(0, 10).join("\n  ");
+		const more = stale.length > 10 ? `\n  ... and ${stale.length - 10} more` : "";
+		throw new Error(
+			`Stale workspace dist outputs detected:\n  ${preview}${more}\nRun 'npm run build' from the repository root before bundling coding-agent.`,
+		);
+	}
+}
+
+validateWorkspaceDistFresh();
 
 for (const entry of [
 	join(codingAgentDistDir, "cli.js"),

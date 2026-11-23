@@ -27,6 +27,12 @@ import { formatProviderError, normalizeProviderError } from "../utils/error-body
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
+import {
+	finalizeLeakedTurn,
+	findLeakedTurn,
+	type LeakedTurnDrop,
+	namesTurnsUserAndModel,
+} from "../utils/leaked-turn.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getSystemMessageText } from "../utils/text.ts";
@@ -116,6 +122,8 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 
 			stream.push({ type: "start", partial: output });
 			let currentBlock: TextContent | ThinkingContent | null = null;
+			const leakedTurnScan = namesTurnsUserAndModel(model.id) ? { lineStart: 0, fence: 0 } : undefined;
+			let leakedTurn: LeakedTurnDrop | undefined;
 			const blocks = output.content;
 			const blockIndex = () => blocks.length - 1;
 			for await (const chunk of googleStream) {
@@ -126,6 +134,15 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 				const candidate = chunk.candidates?.[0];
 				if (candidate?.content?.parts) {
 					for (const part of candidate.content.parts) {
+						if (leakedTurn) {
+							if (part.text !== undefined && !isThinkingPart(part)) {
+								leakedTurn.droppedTextLength += part.text.length;
+							}
+							if (part.functionCall) {
+								leakedTurn.droppedToolCalls += 1;
+							}
+							continue;
+						}
 						if (part.text !== undefined) {
 							const isThinking = isThinkingPart(part);
 							if (
@@ -156,6 +173,10 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 									stream.push({ type: "thinking_start", contentIndex: blockIndex(), partial: output });
 								} else {
 									currentBlock = { type: "text", text: "" };
+									if (leakedTurnScan) {
+										leakedTurnScan.lineStart = 0;
+										leakedTurnScan.fence = 0;
+									}
 									output.content.push(currentBlock);
 									stream.push({ type: "text_start", contentIndex: blockIndex(), partial: output });
 								}
@@ -173,21 +194,45 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 									partial: output,
 								});
 							} else {
+								const streamed = currentBlock.text.length;
 								currentBlock.text += part.text;
 								currentBlock.textSignature = retainThoughtSignature(
 									currentBlock.textSignature,
 									part.thoughtSignature,
 								);
-								stream.push({
-									type: "text_delta",
-									contentIndex: blockIndex(),
-									delta: part.text,
-									partial: output,
-								});
+								const leakedAt = leakedTurnScan ? findLeakedTurn(currentBlock.text, leakedTurnScan) : undefined;
+								if (leakedAt !== undefined) {
+									leakedTurn = { droppedTextLength: currentBlock.text.length - leakedAt, droppedToolCalls: 0 };
+									currentBlock.text = currentBlock.text.slice(0, leakedAt).trimEnd();
+								}
+								const delta = currentBlock.text.slice(streamed);
+								if (delta.length > 0) {
+									stream.push({
+										type: "text_delta",
+										contentIndex: blockIndex(),
+										delta,
+										partial: output,
+									});
+								}
 							}
 						}
 
 						if (part.functionCall) {
+							if (!leakedTurn && leakedTurnScan && currentBlock?.type === "text") {
+								const leakedAt = findLeakedTurn(currentBlock.text, leakedTurnScan, true);
+								if (leakedAt !== undefined) {
+									leakedTurn = {
+										droppedTextLength: currentBlock.text.length - leakedAt,
+										droppedToolCalls: 1,
+									};
+									currentBlock.text = currentBlock.text.slice(0, leakedAt).trimEnd();
+									continue;
+								}
+							}
+							if (leakedTurn) {
+								leakedTurn.droppedToolCalls += 1;
+								continue;
+							}
 							if (currentBlock) {
 								if (currentBlock.type === "text") {
 									stream.push({
@@ -265,6 +310,14 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 				}
 			}
 
+			if (!leakedTurn && leakedTurnScan && currentBlock?.type === "text") {
+				const leakedAt = findLeakedTurn(currentBlock.text, leakedTurnScan, true);
+				if (leakedAt !== undefined) {
+					leakedTurn = { droppedTextLength: currentBlock.text.length - leakedAt, droppedToolCalls: 0 };
+					currentBlock.text = currentBlock.text.slice(0, leakedAt).trimEnd();
+				}
+			}
+
 			if (currentBlock) {
 				if (currentBlock.type === "text") {
 					stream.push({
@@ -287,13 +340,17 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 				throw new Error("Request was aborted");
 			}
 
+			if (leakedTurn) {
+				finalizeLeakedTurn(output, leakedTurn);
+			}
+
 			if (output.stopReason === "pending") {
 				throw new Error("Google Vertex stream ended without a finish reason");
 			}
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				const errorMessage = output.rawStopReason
-					? `Provider stopped with: ${output.rawStopReason}`
-					: "An unknown error occurred";
+				const errorMessage =
+					output.errorMessage ||
+					(output.rawStopReason ? `Provider stopped with: ${output.rawStopReason}` : "An unknown error occurred");
 				throw new Error(errorMessage);
 			}
 

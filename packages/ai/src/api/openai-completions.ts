@@ -35,13 +35,17 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
-import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
-import { findLeakedTurn, namesTurnsUserAndModel } from "../utils/leaked-turn.ts";
+import {
+	finalizeLeakedTurn,
+	findLeakedTurn,
+	type LeakedTurnDrop,
+	namesTurnsUserAndModel,
+} from "../utils/leaked-turn.ts";
 import {
 	applyOpenRouterReportedCost,
 	isOpenRouterModel,
@@ -416,7 +420,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			// arrived before that turn's first line. What arrives after it is counted here and otherwise left out:
 			// text, reasoning and tool calls alike. The stream is still read to its end, for the usage.
 			const leakedTurnScan = namesTurnsUserAndModel(model.id) ? { lineStart: 0, fence: 0 } : undefined;
-			let leakedTurn: { droppedTextLength: number; droppedToolCalls: number } | undefined;
+			let leakedTurn: LeakedTurnDrop | undefined;
 			const toolCallBlocksByIndex = new Map<number, ToolCall>();
 			const toolCallBlocksById = new Map<string, ToolCall>();
 			const toolCallStates = new Map<ToolCall, ToolCallState>();
@@ -471,6 +475,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					});
 				}
 			};
+			const getTextBlock = (): TextContent | null => textBlock;
 			const ensureTextBlock = () => {
 				if (!textBlock) {
 					textBlock = { type: "text", text: "" };
@@ -665,6 +670,18 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						}
 					}
 
+					// Before accepting tool calls, check whether the preceding text ended on an unterminated
+					// leaked turn marker (e.g. `Done.\nuser` immediately followed by a fabricated tool call).
+					const currentText = getTextBlock();
+					if (!leakedTurn && leakedTurnScan && currentText && choice?.delta?.tool_calls?.length) {
+						const leakedAt = findLeakedTurn(currentText.text, leakedTurnScan, true);
+						if (leakedAt !== undefined) {
+							leakedTurn = { droppedTextLength: currentText.text.length - leakedAt, droppedToolCalls: 0 };
+							currentText.text = currentText.text.slice(0, leakedAt).trimEnd();
+							leakedTurn.droppedToolCalls += choice.delta.tool_calls.filter((toolCall) => toolCall.id).length;
+						}
+					}
+
 					// Tool calls in the delta that brought the leaked line belong to the invented turn.
 					if (!leakedTurn && choice?.delta?.tool_calls) {
 						for (const toolCall of choice.delta.tool_calls as StreamingToolCallDelta[]) {
@@ -699,6 +716,15 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				}
 			}
 
+			const finalText = getTextBlock();
+			if (!leakedTurn && leakedTurnScan && finalText) {
+				const leakedAt = findLeakedTurn(finalText.text, leakedTurnScan, true);
+				if (leakedAt !== undefined) {
+					leakedTurn = { droppedTextLength: finalText.text.length - leakedAt, droppedToolCalls: 0 };
+					finalText.text = finalText.text.slice(0, leakedAt).trimEnd();
+				}
+			}
+
 			for (const block of blocks) {
 				finishBlock(block);
 			}
@@ -716,19 +742,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				// The reply ended where the invented turn began, so it ends as a reply does, whatever ended the
 				// invented turn (a tool call, or the provider's MALFORMED_RESPONSE). A response that holds nothing
 				// before that turn has no reply: an error to retry, as an empty malformed stop is.
-				appendAssistantMessageDiagnostic(output, {
-					type: "leaked_turn",
-					timestamp: Date.now(),
-					details: leakedTurn,
-				});
-				const calledTool = output.content.some((block) => block.type === "toolCall");
-				if (calledTool || output.content.some((block) => block.type === "text" && block.text.length > 0)) {
-					output.stopReason = calledTool ? "toolUse" : "stop";
-					delete output.errorMessage;
-				} else {
-					output.stopReason = "error";
-					output.errorMessage = "Provider wrote the next turn in place of a reply";
-				}
+				finalizeLeakedTurn(output, leakedTurn);
 			}
 			if (output.stopReason === "error") {
 				throw new Error(output.errorMessage || "Provider returned an error stop reason");

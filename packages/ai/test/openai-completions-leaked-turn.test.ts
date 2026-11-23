@@ -222,4 +222,32 @@ describe("OpenAI completions: a Gemini reply that writes the next turn itself", 
 		expect(message.stopReason).toBe("toolUse");
 		expect(message.diagnostics).toBeUndefined();
 	});
+
+	it("cuts an unterminated trailing user line before a tool call or at end of stream", async () => {
+		const beforeTool = await respond(gemini, [
+			text("Waiting on wakes.\nuser"),
+			toolCall(0, "call_1", "merge"),
+			finish("tool_calls", "STOP"),
+		]);
+		expect(beforeTool.message.content).toEqual([{ type: "text", text: "Waiting on wakes." }]);
+		expect(beforeTool.message.stopReason).toBe("stop");
+		expect(beforeTool.message.diagnostics).toEqual([
+			{
+				type: "leaked_turn",
+				timestamp: expect.any(Number),
+				details: { droppedTextLength: 4, droppedToolCalls: 1 },
+			},
+		]);
+
+		const atEof = await respond(gemini, [text("Waiting on wakes.\n<|turn>user"), finish("stop", "STOP")]);
+		expect(atEof.message.content).toEqual([{ type: "text", text: "Waiting on wakes." }]);
+		expect(atEof.message.stopReason).toBe("stop");
+		expect(atEof.message.diagnostics).toEqual([
+			{
+				type: "leaked_turn",
+				timestamp: expect.any(Number),
+				details: { droppedTextLength: "<|turn>user".length, droppedToolCalls: 0 },
+			},
+		]);
+	});
 });
