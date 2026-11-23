@@ -23,17 +23,16 @@ A hidden thinking block shows as `[think...]` and a collapsed tool call as `[too
 
 In `~/.pi/agent/settings.json`, set `"hideThinkingBlock": true` and `"terminal": { "showImages": false }`.
 
-This copy has a fast path for expanded tool calls and compaction summaries. It goes with this fork's cached `Ctrl+O` (commit `09d8e3c`); an older copy of the extension keeps part of the old slowness.
+A long transcript costs little to draw again: the extension keeps its rows from one frame to the next and lays out again only from the first block that changed. It tells Pi where each block is in the way Pi 1.4 and Pi 1.6 each expect, so a wheel event or a click does not make Pi draw the transcript again to find the block under the pointer. When rows above the reader change (a tool opens, thinking shows), the row the reader had on top stays on top.
 
 ## What to know
 
 Pi's extension API has no call for either layout. While a session is open, each extension replaces a few methods of Pi's interactive mode. It puts them back when the session closes, and takes itself out with a notice if its own code throws. Check them after a Pi upgrade.
 
-`keep-scrollback.ts` has a test, which passes against this fork (1.6.0) and against stock Pi 1.4.0:
+Each has a test, which passes against this fork (1.6.0) and against stock Pi 1.4.0:
 
 ```sh
 node extensions/test-keep-scrollback.mjs                                    # this repository's build
-PI_PACKAGE_DIR=/path/to/pi-coding-agent node extensions/test-keep-scrollback.mjs   # another Pi
+node extensions/test-quiet-transcript.mjs
+PI_PACKAGE_DIR=/path/to/pi-coding-agent node extensions/test-quiet-transcript.mjs   # another Pi
 ```
-
-`quiet-transcript.ts` has no test of its own. It is in daily use on this fork.
