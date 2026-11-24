@@ -1,11 +1,18 @@
 # Extensions that go with this fork
 
-Two extensions for Pi's interactive mode, each one file. The fork does not load them by itself: copy the ones you want into Pi's user extensions and restart Pi (or run `/reload`).
+Three extensions for Pi's interactive mode, each one file. The fork does not load them by itself: copy the ones you want into Pi's user extensions and restart Pi (or run `/reload`).
 
 ```sh
 mkdir -p ~/.pi/agent/extensions
-cp extensions/keep-scrollback.ts extensions/quiet-transcript.ts ~/.pi/agent/extensions/
+cp extensions/keep-scrollback.ts extensions/quiet-transcript.ts extensions/clock-timestamps.ts ~/.pi/agent/extensions/
 ```
+
+## clock-timestamps.ts: single-row clock toolbar with think/tools state and per-event timestamps
+
+Replaces Pi's default footer with one compact row showing the live clock, session cost, context %, `think:{expanded,collapsed} • tools:{expanded,collapsed}`, and model/thinking level, and stamps user/assistant/summary messages with timestamps (`/timestamps` toggles message timestamps).
+
+- Caches session cost and `ctx.getContextUsage()` by `(sessionId, leafId, entryCount, model)` so scrolling and the 1-second clock tick stay O(1) instead of rescanning the session on every frame.
+- Reads live thinking visibility via `ctx.ui.getThinkingExpanded()` on `johnservil/pi` (with an mtime-gated fallback to `settings.json` on stock Pi).
 
 ## keep-scrollback.ts: the transcript stays in view across compactions
 
@@ -34,5 +41,6 @@ Each has a test, which passes against this fork (1.6.0) and against stock Pi 1.4
 ```sh
 node extensions/test-keep-scrollback.mjs                                    # this repository's build
 node extensions/test-quiet-transcript.mjs
+node extensions/test-clock-timestamps.mjs
 PI_PACKAGE_DIR=/path/to/pi-coding-agent node extensions/test-quiet-transcript.mjs   # another Pi
 ```

@@ -313,6 +313,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		setToolsExpanded(_expanded: boolean) {
 			// Tool expansion not supported in RPC mode - no TUI
 		},
+
+		getThinkingExpanded() {
+			// Thinking expansion not supported in RPC mode - no TUI
+			return true;
+		},
 	});
 
 	runtimeHost.setRebindSession(async () => {

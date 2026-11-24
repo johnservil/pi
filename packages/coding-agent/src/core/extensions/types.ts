@@ -318,6 +318,9 @@ export interface ExtensionUIContext {
 
 	/** Set tool output expansion state. */
 	setToolsExpanded(expanded: boolean): void;
+
+	/** Get current thinking block expansion state (true when thinking blocks are visible). */
+	getThinkingExpanded(): boolean;
 }
 
 // ============================================================================

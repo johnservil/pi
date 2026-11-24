@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
@@ -75,12 +76,55 @@ const httpsProxyAgentNamedExportPlugin = {
 	},
 };
 
+function readGit(args) {
+	try {
+		return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+	} catch {
+		return "";
+	}
+}
+
+function normalizeForkSlug(remoteUrl) {
+	if (!remoteUrl) return "";
+	const cleaned = remoteUrl.replace(/\.git$/, "");
+	const sshMatch = cleaned.match(/^[^@]+@[^:]+:(.+)$/);
+	if (sshMatch) return sshMatch[1];
+	try {
+		const parsed = new URL(cleaned);
+		return parsed.pathname.replace(/^\/+/, "");
+	} catch {
+		return cleaned;
+	}
+}
+
+function collectBuildMetadata() {
+	const fork = normalizeForkSlug(readGit(["remote", "get-url", "origin"]));
+	const commit = readGit(["rev-parse", "HEAD"]);
+	const commitShort = commit ? commit.slice(0, 7) : "";
+	const commitDate = commit ? readGit(["show", "-s", "--format=%cI", "HEAD"]) : "";
+	const commitSubject = commit ? readGit(["show", "-s", "--format=%s", "HEAD"]) : "";
+	const dirty = commit ? readGit(["status", "--porcelain"]).length > 0 : false;
+	const builtAt = new Date().toISOString();
+	return { fork, commit, commitShort, commitDate, commitSubject, dirty, builtAt };
+}
+
+const buildMetadata = collectBuildMetadata();
+
 function commonBuildOptions() {
 	return {
 		absWorkingDir: repoRoot,
 		banner,
 		bundle: true,
-		define: { PI_BUNDLED_NODE: "true" },
+		define: {
+			PI_BUNDLED_NODE: "true",
+			PI_BUILD_FORK: JSON.stringify(buildMetadata.fork),
+			PI_BUILD_COMMIT: JSON.stringify(buildMetadata.commit),
+			PI_BUILD_COMMIT_SHORT: JSON.stringify(buildMetadata.commitShort),
+			PI_BUILD_COMMIT_DATE: JSON.stringify(buildMetadata.commitDate),
+			PI_BUILD_COMMIT_SUBJECT: JSON.stringify(buildMetadata.commitSubject),
+			PI_BUILD_DIRTY: buildMetadata.dirty ? "true" : "false",
+			PI_BUILD_TIME: JSON.stringify(buildMetadata.builtAt),
+		},
 		external: ["@silvia-odwyer/photon-node"],
 		format: "esm",
 		legalComments: "none",

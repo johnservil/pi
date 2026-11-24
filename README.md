@@ -1,7 +1,8 @@
 > **Fork (`johnservil/pi`)**: carries:
 > 1. A fix for OpenRouter normalizing Google Gemini's `native_finish_reason: "MALFORMED_RESPONSE"` to `finish_reason: "stop"` (upstream issue [earendil-works/pi#12407](https://github.com/earendil-works/pi/issues/12407); [root-cause writeup](docs/openrouter-malformed-response-root-cause.md); clean upstream-ready commit on branch [`fix/openrouter-native-finish-reason`](https://github.com/johnservil/pi/tree/fix/openrouter-native-finish-reason), `9ce43c3`).
-> 2. Cached + viewport-first `Ctrl+O` tool expansion (`09d8e3c`, 20x–65x faster on long scrollbacks).
-> 3. Two extensions for the interactive mode, in [`extensions/`](extensions/README.md): `keep-scrollback.ts` (the transcript stays in view across compactions) and `quiet-transcript.ts` (short markers for hidden thinking and collapsed tools).
+> 2. Cached + viewport-first `Ctrl+O` tool expansion (`09d8e3c`, 20x–65x faster on long scrollbacks), cached `AgentSession.getContextUsage()`, and `ctx.ui.getThinkingExpanded()` for custom footers.
+> 3. Built-in `/version` slash command, startup header fork/commit tag, and `pi --build-info` showing Pi's fork, git commit, and every loaded plugin with its package/declared version and `sha256` fingerprint.
+> 4. Three extensions for the interactive mode, in [`extensions/`](extensions/README.md): `keep-scrollback.ts` (the transcript stays in view across compactions), `quiet-transcript.ts` (short markers for hidden thinking and collapsed tools), and `clock-timestamps.ts` (single-row clock toolbar with cached stats, `think:{expanded,collapsed} • tools:{expanded,collapsed}`, and per-event timestamps).
 >
 > **Build and install this fork from source** (Node.js 22.19+ required):
 > ```sh
@@ -14,10 +15,10 @@
 > mkdir -p ~/.local/bin
 > ln -sf "$PWD/packages/coding-agent/dist/bundle/cli.js" ~/.local/bin/pi
 > # Verify (make sure ~/.local/bin is before other node/npm bin dirs in PATH):
-> which pi && pi --version
-> # Optional: the two extensions (extensions/README.md), then restart pi:
+> which pi && pi --build-info
+> # Optional: the extensions (extensions/README.md), then restart pi (or /reload):
 > mkdir -p ~/.pi/agent/extensions
-> cp extensions/keep-scrollback.ts extensions/quiet-transcript.ts ~/.pi/agent/extensions/
+> cp extensions/keep-scrollback.ts extensions/quiet-transcript.ts extensions/clock-timestamps.ts ~/.pi/agent/extensions/
 > ```
 > To roll back to stock `pi`, remove the symlink (`rm ~/.local/bin/pi`). To resume an existing session after switching, `/quit` and run `pi -c`.
 

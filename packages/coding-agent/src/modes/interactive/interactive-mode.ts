@@ -60,6 +60,7 @@ import {
 	APP_TITLE,
 	CONFIG_DIR_NAME,
 	detectInstallChange,
+	formatBuildTag,
 	getAgentDir,
 	getAuthPath,
 	getDebugLogPath,
@@ -129,6 +130,7 @@ import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import { collectVersionInfo, formatVersionInfoThemed } from "../../core/version-info.ts";
 import { addMcpServerConfig } from "../../extensions/mcp/config.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
@@ -1108,10 +1110,12 @@ export class InteractiveMode {
 			// its second line the first line of key hints. Terminals that cannot render the logo get a
 			// "Pi vX" line instead, with the key hints below it.
 			const showLogo = supportsPiLogo();
+			const buildTag = formatBuildTag();
+			const versionBanner = buildTag ? `v${this.version} (${buildTag})` : `v${this.version}`;
 			const withLogo = (hints: string) => {
-				if (!showLogo) return `${piWordmark()} ${theme.fg("dim", `v${this.version}`)}\n${hints}`;
+				if (!showLogo) return `${piWordmark()} ${theme.fg("dim", versionBanner)}\n${hints}`;
 				const [top, bottom] = piLogoLines();
-				return `${top} ${theme.fg("dim", `v${this.version}`)}\n${bottom} ${hints}`;
+				return `${top} ${theme.fg("dim", versionBanner)}\n${bottom} ${hints}`;
 			};
 
 			// Build startup instructions using keybinding hint helpers
@@ -2888,6 +2892,7 @@ export class InteractiveMode {
 			},
 			getToolsExpanded: () => this.toolOutputExpanded,
 			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
+			getThinkingExpanded: () => !this.hideThinkingBlock,
 		};
 	}
 
@@ -3449,6 +3454,11 @@ export class InteractiveMode {
 			}
 			if (text === "/session") {
 				this.handleSessionCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/version") {
+				this.handleVersionCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -7262,6 +7272,29 @@ export class InteractiveMode {
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new ThemedText(renderInfo, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleVersionCommand(): void {
+		const extensionsResult = this.session.resourceLoader.getExtensions();
+		const skillsResult = this.session.resourceLoader.getSkills();
+		const themesResult = this.session.resourceLoader.getThemes();
+		const promptsResult = this.session.resourceLoader.getPrompts();
+		const report = collectVersionInfo({
+			version: this.version,
+			agentDir: getAgentDir(),
+			cwd: this.sessionManager.getCwd(),
+			extensions: extensionsResult.extensions,
+			extensionErrors: extensionsResult.errors,
+			globalPackages: this.settingsManager.getGlobalSettings().packages,
+			projectPackages: this.settingsManager.getProjectSettings().packages,
+			skillCount: skillsResult.skills.length,
+			themeCount: themesResult.themes.length,
+			promptCount: promptsResult.prompts.length,
+		});
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new ThemedText(() => formatVersionInfoThemed(report, theme), 1, 0));
 		this.ui.requestRender();
 	}
 

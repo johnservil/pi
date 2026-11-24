@@ -28,6 +28,43 @@ export const isBunRuntime = !!process.versions.bun;
 declare const PI_BUNDLED_NODE: boolean;
 export const isBundledNode = typeof PI_BUNDLED_NODE !== "undefined" && PI_BUNDLED_NODE;
 
+declare const PI_BUILD_FORK: string;
+declare const PI_BUILD_COMMIT: string;
+declare const PI_BUILD_COMMIT_SHORT: string;
+declare const PI_BUILD_COMMIT_DATE: string;
+declare const PI_BUILD_COMMIT_SUBJECT: string;
+declare const PI_BUILD_DIRTY: boolean;
+declare const PI_BUILD_TIME: string;
+
+export interface BuildInfo {
+	fork: string;
+	commit: string;
+	commitShort: string;
+	commitDate: string;
+	commitSubject: string;
+	dirty: boolean;
+	builtAt: string;
+}
+
+export const BUILD_INFO: BuildInfo = {
+	fork: typeof PI_BUILD_FORK === "string" ? PI_BUILD_FORK : "",
+	commit: typeof PI_BUILD_COMMIT === "string" ? PI_BUILD_COMMIT : "",
+	commitShort: typeof PI_BUILD_COMMIT_SHORT === "string" ? PI_BUILD_COMMIT_SHORT : "",
+	commitDate: typeof PI_BUILD_COMMIT_DATE === "string" ? PI_BUILD_COMMIT_DATE : "",
+	commitSubject: typeof PI_BUILD_COMMIT_SUBJECT === "string" ? PI_BUILD_COMMIT_SUBJECT : "",
+	dirty: typeof PI_BUILD_DIRTY === "boolean" ? PI_BUILD_DIRTY : false,
+	builtAt: typeof PI_BUILD_TIME === "string" ? PI_BUILD_TIME : "",
+};
+
+/** Short human-readable build tag like "johnservil/pi @ 1f0ac0a" or "" when absent. */
+export function formatBuildTag(info: BuildInfo = BUILD_INFO): string {
+	const sha = info.commitShort ? `${info.commitShort}${info.dirty ? "-dirty" : ""}` : "";
+	if (info.fork && sha) return `${info.fork} @ ${sha}`;
+	if (info.fork) return info.fork;
+	if (sha) return sha;
+	return "";
+}
+
 // =============================================================================
 // Install Method Detection
 // =============================================================================

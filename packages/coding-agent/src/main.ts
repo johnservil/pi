@@ -65,6 +65,7 @@ import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/setti
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { collectVersionInfo, discoverExtensionFiles, formatVersionInfoPlain } from "./core/version-info.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { loadMcpCommand } from "./extensions/mcp/cli.lazy.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
@@ -676,6 +677,19 @@ export async function main(args: string[], options?: MainOptions) {
 
 	if (parsed.version) {
 		console.log(VERSION);
+		process.exit(0);
+	}
+
+	if (parsed.buildInfo) {
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const report = collectVersionInfo({
+			agentDir,
+			cwd,
+			extensions: discoverExtensionFiles(agentDir, cwd),
+			globalPackages: settingsManager.getGlobalSettings().packages,
+			projectPackages: settingsManager.getProjectSettings().packages,
+		});
+		console.log(formatVersionInfoPlain(report));
 		process.exit(0);
 	}
 

@@ -518,6 +518,15 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	/** Prompt options after before_agent_start mutations for the active run. */
 	private _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
+	/** Cached result of `getContextUsage()`, invalidated whenever session/leaf/entries/model change. */
+	private _contextUsageCache?: {
+		sessionManager: SessionManager;
+		sessionId: string;
+		leafId: string | null;
+		entryCount: number;
+		model: Model<any> | undefined;
+		usage: ContextUsage | undefined;
+	};
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -4420,13 +4429,30 @@ export class AgentSession {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return undefined;
 
+		const sessionManager = this.sessionManager;
+		const sessionId = sessionManager.getSessionId();
+		const leafId = sessionManager.getLeafId();
+		const entryCount = sessionManager.getEntryCount();
+		const cached = this._contextUsageCache;
+		if (
+			cached &&
+			cached.sessionManager === sessionManager &&
+			cached.sessionId === sessionId &&
+			cached.leafId === leafId &&
+			cached.entryCount === entryCount &&
+			cached.model === model
+		) {
+			return cached.usage ? { ...cached.usage } : undefined;
+		}
+
 		// After compaction, the last assistant usage reflects pre-compaction context size.
 		// We can only trust usage from an assistant that responded after the latest compaction.
 		// If no such assistant exists, context token count is unknown until the next LLM response.
-		const projection = this.sessionManager.buildSessionProjection();
-		const branch = this.sessionManager.getBranch();
+		const projection = sessionManager.buildSessionProjection();
+		const branch = sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branch);
 
+		let usage: ContextUsage;
 		if (latestCompaction) {
 			const projectedAssistants = new Set(
 				projection.entries.flatMap((entry) =>
@@ -4445,17 +4471,23 @@ export class AgentSession {
 			const hasPostCompactionUsage = branch
 				.slice(compactionIndex + 1)
 				.some((entry) => projectedAssistants.has(entry.id));
-			if (!hasPostCompactionUsage) return { tokens: null, contextWindow, percent: null };
+			if (!hasPostCompactionUsage) {
+				usage = { tokens: null, contextWindow, percent: null };
+				this._contextUsageCache = { sessionManager, sessionId, leafId, entryCount, model, usage };
+				return { ...usage };
+			}
 		}
 
 		const estimate = estimateProjectedContextTokens(projection, branch);
 		const percent = (estimate.tokens / contextWindow) * 100;
 
-		return {
+		usage = {
 			tokens: estimate.tokens,
 			contextWindow,
 			percent,
 		};
+		this._contextUsageCache = { sessionManager, sessionId, leafId, entryCount, model, usage };
+		return { ...usage };
 	}
 
 	/**
